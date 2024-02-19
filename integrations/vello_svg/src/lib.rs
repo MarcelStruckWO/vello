@@ -33,7 +33,6 @@
 //! - patterns
 
 use std::convert::Infallible;
-use usvg::NodeExt;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill};
 use vello::Scene;
@@ -65,7 +64,7 @@ pub fn render_tree_with<F: FnMut(&mut Scene, &usvg::Node) -> Result<(), E>, E>(
     svg: &usvg::Tree,
     mut on_err: F,
 ) -> Result<(), E> {
-    for elt in svg.root.descendants() {
+    for elt in svg.root().children() {
         let transform = {
             let usvg::Transform {
                 sx,
@@ -77,15 +76,15 @@ pub fn render_tree_with<F: FnMut(&mut Scene, &usvg::Node) -> Result<(), E>, E>(
             } = elt.abs_transform();
             Affine::new([sx, kx, ky, sy, tx, ty].map(f64::from))
         };
-        match &*elt.borrow() {
-            usvg::NodeKind::Group(_) => {}
-            usvg::NodeKind::Path(path) => {
+        match &*elt {
+            usvg::Node::Group(_) => {}
+            usvg::Node::Path(path) => {
                 let mut local_path = BezPath::new();
                 // The semantics of SVG paths don't line up with `BezPath`; we
                 // must manually track initial points
                 let mut just_closed = false;
                 let mut most_recent_initial = (0., 0.);
-                for elt in path.data.segments() {
+                for elt in path.data().segments() {
                     match elt {
                         usvg::tiny_skia_path::PathSegment::MoveTo(p) => {
                             if std::mem::take(&mut just_closed) {
@@ -128,12 +127,12 @@ pub fn render_tree_with<F: FnMut(&mut Scene, &usvg::Node) -> Result<(), E>, E>(
 
                 // FIXME: let path.paint_order determine the fill/stroke order.
 
-                if let Some(fill) = &path.fill {
+                if let Some(fill) = &path.fill() {
                     if let Some((brush, brush_transform)) =
-                        paint_to_brush(&fill.paint, fill.opacity)
+                        paint_to_brush(&fill.paint(), fill.opacity())
                     {
                         scene.fill(
-                            match fill.rule {
+                            match fill.rule() {
                                 usvg::FillRule::NonZero => Fill::NonZero,
                                 usvg::FillRule::EvenOdd => Fill::EvenOdd,
                             },
@@ -146,14 +145,14 @@ pub fn render_tree_with<F: FnMut(&mut Scene, &usvg::Node) -> Result<(), E>, E>(
                         on_err(scene, &elt)?;
                     }
                 }
-                if let Some(stroke) = &path.stroke {
+                if let Some(stroke) = &path.stroke() {
                     if let Some((brush, brush_transform)) =
-                        paint_to_brush(&stroke.paint, stroke.opacity)
+                        paint_to_brush(&stroke.paint(), stroke.opacity())
                     {
                         // FIXME: handle stroke options such as linecap,
                         // linejoin, etc.
                         scene.stroke(
-                            &Stroke::new(stroke.width.get() as f64),
+                            &Stroke::new(stroke.width().get() as f64),
                             transform,
                             &brush,
                             Some(brush_transform),
@@ -164,10 +163,10 @@ pub fn render_tree_with<F: FnMut(&mut Scene, &usvg::Node) -> Result<(), E>, E>(
                     }
                 }
             }
-            usvg::NodeKind::Image(_) => {
+            usvg::Node::Image(_) => {
                 on_err(scene, &elt)?;
             }
-            usvg::NodeKind::Text(_) => {
+            usvg::Node::Text(_) => {
                 on_err(scene, &elt)?;
             }
         }
@@ -178,21 +177,20 @@ pub fn render_tree_with<F: FnMut(&mut Scene, &usvg::Node) -> Result<(), E>, E>(
 /// Error handler function for [`render_tree_with`] which draws a transparent red box
 /// instead of unsupported SVG features
 pub fn default_error_handler(scene: &mut Scene, node: &usvg::Node) -> Result<(), Infallible> {
-    if let Some(bb) = node.calculate_bbox() {
-        let rect = Rect {
-            x0: bb.left() as f64,
-            y0: bb.top() as f64,
-            x1: bb.right() as f64,
-            y1: bb.bottom() as f64,
-        };
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::RED.with_alpha_factor(0.5),
-            None,
-            &rect,
-        );
-    }
+    let bb = node.abs_bounding_box();
+    let rect = Rect {
+        x0: bb.left() as f64,
+        y0: bb.top() as f64,
+        x1: bb.right() as f64,
+        y1: bb.bottom() as f64,
+    };
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::RED.with_alpha_factor(0.5),
+        None,
+        &rect,
+    );
     Ok(())
 }
 
@@ -209,27 +207,27 @@ fn paint_to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<(Brush,
         )),
         usvg::Paint::LinearGradient(gr) => {
             let stops: Vec<vello::peniko::ColorStop> = gr
-                .stops
+                .stops()
                 .iter()
                 .map(|stop| {
                     let mut cstop = vello::peniko::ColorStop::default();
-                    cstop.color.r = stop.color.red;
-                    cstop.color.g = stop.color.green;
-                    cstop.color.b = stop.color.blue;
-                    cstop.color.a = (stop.opacity * opacity).to_u8();
-                    cstop.offset = stop.offset.get();
+                    cstop.color.r = stop.color().red;
+                    cstop.color.g = stop.color().green;
+                    cstop.color.b = stop.color().blue;
+                    cstop.color.a = (stop.opacity() * opacity).to_u8();
+                    cstop.offset = stop.offset().get();
                     cstop
                 })
                 .collect();
-            let start = Point::new(gr.x1 as f64, gr.y1 as f64);
-            let end = Point::new(gr.x2 as f64, gr.y2 as f64);
+            let start = Point::new(gr.x1() as f64, gr.y1() as f64);
+            let end = Point::new(gr.x2() as f64, gr.y2() as f64);
             let arr = [
-                gr.transform.sx,
-                gr.transform.ky,
-                gr.transform.kx,
-                gr.transform.sy,
-                gr.transform.tx,
-                gr.transform.ty,
+                gr.transform().sx,
+                gr.transform().ky,
+                gr.transform().kx,
+                gr.transform().sy,
+                gr.transform().tx,
+                gr.transform().ty,
             ]
             .map(f64::from);
             let transform = Affine::new(arr);
@@ -239,30 +237,30 @@ fn paint_to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<(Brush,
         }
         usvg::Paint::RadialGradient(gr) => {
             let stops: Vec<vello::peniko::ColorStop> = gr
-                .stops
+                .stops()
                 .iter()
                 .map(|stop| {
                     let mut cstop = vello::peniko::ColorStop::default();
-                    cstop.color.r = stop.color.red;
-                    cstop.color.g = stop.color.green;
-                    cstop.color.b = stop.color.blue;
-                    cstop.color.a = (stop.opacity * opacity).to_u8();
-                    cstop.offset = stop.offset.get();
+                    cstop.color.r = stop.color().red;
+                    cstop.color.g = stop.color().green;
+                    cstop.color.b = stop.color().blue;
+                    cstop.color.a = (stop.opacity() * opacity).to_u8();
+                    cstop.offset = stop.offset().get();
                     cstop
                 })
                 .collect();
 
-            let start_center = Point::new(gr.cx as f64, gr.cy as f64);
-            let end_center = Point::new(gr.fx as f64, gr.fy as f64);
+            let start_center = Point::new(gr.cx() as f64, gr.cy() as f64);
+            let end_center = Point::new(gr.fx() as f64, gr.fy() as f64);
             let start_radius = 0_f32;
-            let end_radius = gr.r.get();
+            let end_radius = gr.r().get();
             let arr = [
-                gr.transform.sx,
-                gr.transform.ky,
-                gr.transform.kx,
-                gr.transform.sy,
-                gr.transform.tx,
-                gr.transform.ty,
+                gr.transform().sx,
+                gr.transform().ky,
+                gr.transform().kx,
+                gr.transform().sy,
+                gr.transform().tx,
+                gr.transform().ty,
             ]
             .map(f64::from);
             let transform = Affine::new(arr);
